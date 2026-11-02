@@ -1,6 +1,6 @@
 from src.data_loader import load_data
 from src.modeling import train_model
-
+# it is video based ppt so dont add things like ask questions etc and 
 
 if __name__ == "__main__":
     data=load_data()
