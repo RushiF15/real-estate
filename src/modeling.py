@@ -3,6 +3,7 @@ import joblib
 import numpy as np
 import pandas as pd
 from sklearn.compose import ColumnTransformer
+from sklearn.dummy import DummyRegressor
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
@@ -25,13 +26,26 @@ def make_pipeline():
 
 def train_model(df,model_path=MODEL_PATH):
     features=[c for c in FEATURES if c in df.columns]
-    if len(df)<40: raise ValueError("At least 40 complete observations are required for a train/test split.")
-    X=df[features].copy(); y=df[TARGET].astype(float)
-    if y.isna().any(): raise ValueError("Target contains missing prices.")
+    leaked=sorted(set(features)&LEAKAGE_COLUMNS)
+    if leaked: raise ValueError("Target leakage fields cannot be predictors: "+", ".join(leaked))
+    if TARGET in features: raise ValueError("The target cannot be included as a predictor.")
+    if TARGET not in df.columns: raise ValueError(f"Dataset is missing target column: {TARGET}")
+
+    numeric_y=pd.to_numeric(df[TARGET],errors="coerce")
+    target_values=numeric_y.to_numpy(dtype=float,na_value=np.nan)
+    valid_target=np.isfinite(target_values)&(target_values>0)
+    valid_rows=int(valid_target.sum()); excluded_rows=int(len(df)-valid_rows)
+    if valid_rows<40: raise ValueError("At least 40 rows with finite, positive target prices are required for a train/test split.")
+
+    X=df.iloc[np.flatnonzero(valid_target)][features].copy()
+    y=pd.Series(target_values[valid_target],index=X.index,name=TARGET)
     X_train,X_test,y_train,y_test=train_test_split(X,y,test_size=.2,random_state=42)
     model=make_pipeline(); model.set_params(preprocess__transformers=[("numeric",model.named_steps["preprocess"].transformers[0][1],[c for c in NUMERIC_FEATURES if c in features]),("categorical",model.named_steps["preprocess"].transformers[1][1],[c for c in CATEGORICAL_FEATURES if c in features])])
     model.fit(X_train,y_train); pred=model.predict(X_test)
-    metrics={"mae":float(mean_absolute_error(y_test,pred)),"rmse":float(np.sqrt(mean_squared_error(y_test,pred))),"r2":float(r2_score(y_test,pred)),"rows":len(df),"train_rows":len(X_train),"test_rows":len(X_test),"test_size":.2,"features":features,"y_test":y_test.to_numpy(),"predictions":pred}
+    baseline=DummyRegressor(strategy="mean"); baseline.fit(np.zeros((len(y_train),1)),y_train); baseline_pred=baseline.predict(np.zeros((len(y_test),1)))
+    rf_metrics={"mae":float(mean_absolute_error(y_test,pred)),"rmse":float(np.sqrt(mean_squared_error(y_test,pred))),"r2":float(r2_score(y_test,pred))}
+    baseline_metrics={"mae":float(mean_absolute_error(y_test,baseline_pred)),"rmse":float(np.sqrt(mean_squared_error(y_test,baseline_pred))),"r2":float(r2_score(y_test,baseline_pred))}
+    metrics={**rf_metrics,"random_forest":rf_metrics,"dummy_regressor":baseline_metrics,"rows":valid_rows,"valid_rows":valid_rows,"excluded_rows":excluded_rows,"total_rows":len(df),"train_rows":len(X_train),"test_rows":len(X_test),"test_size":.2,"split":"random 80/20 holdout","random_state":42,"features":features,"y_test":y_test.to_numpy(),"predictions":pred,"baseline_predictions":baseline_pred}
     Path(model_path).parent.mkdir(parents=True,exist_ok=True); joblib.dump({"model":model,"metrics":metrics,"features":features,"target":TARGET},model_path)
     return model,metrics
 
